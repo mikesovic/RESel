@@ -1,0 +1,120 @@
+name=`echo "${1}" | sed -E 's/.fasta$//' | sed -E 's/.fa$//' | sed -E 's/.fna$//'`
+
+if [[ ! -e ${name}_out ]]; then
+    mkdir ${name}_out
+elif [[ ! -d ${name}_out ]]; then
+    echo "$dir already exists but is not a directory" 1>&2
+fi
+
+#get the number of chromosomes (fasta entries) in genome and store that number as 'i'
+i=`grep -c '^>' ${1}`
+
+#split the genome into individual chromosomes - one per file
+perl ~/software/RESelv1.4.6/fasta-splitter.pl --n-parts ${i} ${1}
+
+lengthi=`echo ${i} | wc -c`
+
+mkdir unwrapped
+mkdir uppers
+
+#for each chromosome, unwrap the file so there are no line endings - all sequence is on one line
+#have to deal with how the files are numbered in the event there are 10 or more chromosomes
+#write the sequence in all uppercase to a file in the 'uppers' dir
+
+for j in $(seq 1 ${i})
+do
+
+    lengthj=`echo ${j} | wc -c`
+    zerosNeeded="$(( ${lengthi} - ${lengthj} ))"
+    
+    if [[ ${zerosNeeded} == 1 ]] ; then 
+      j=`echo "0${j}"`
+    fi
+    
+    if [[ ${zerosNeeded} == 2 ]] ; then 
+      j=`echo "00${j}"`
+    fi
+    
+    if [[ ${zerosNeeded} == 3 ]] ; then 
+      j=`echo "000${j}"`
+    fi
+    
+    if [[ ${zerosNeeded} == 4 ]] ; then 
+      j=`echo "0000${j}"`
+    fi
+    
+    if [[ ${zerosNeeded} == 5 ]] ; then 
+      j=`echo "00000${j}"`
+    fi
+    
+    if [[ ${zerosNeeded} == 6 ]] ; then 
+      j=`echo "000000${j}"`
+    fi
+    
+    perl ~/software/RESelv1.4.6/scripts/format_fasta.pl ${name}.part-${j}.fa unwrapped/${name}_chr${j}_unwrapped.fa 
+    grep -v '>' unwrapped/${name}_chr${j}_unwrapped.fa | tr '[:lower:]' '[:upper:]' > uppers/${name}_${j}.txt
+done
+
+rm *part-*
+
+#get set of unique RE naems to be evaluated to generate all pairwise combinations. 
+unique_REs=`cat ${2} | cut -f2 | sort | uniq | tr "\n" " "`
+declare -a REs=(${unique_REs})
+
+#get the number of REs to analyze, then subtract two and store as 'length' (one because zero indexed and one b/c don't want to start an iteration with last RE in list.
+length=`echo ${#REs[@]}`
+
+if [[ ${length} > 1 ]] #if at least 2 REs are in master RE file
+ then
+ ((length--))
+ ((length--))
+
+ for (( i=0; i<=${length}; i++ ))
+  do
+  for (( j=`echo "${i} + 1"`; j<=`echo "${length} + 1"`; j++ ))
+   do 
+   RE1=${REs[${i}]}
+   RE2=${REs[${j}]}
+
+   #get the lines from the master RE file associated with the two RE's for the current analysis
+   grep -E "`echo $RE1`|`echo $RE2`" ${2} > ${name}_re_${RE1}_${RE2}_temp.txt
+   awk -v RE1=${RE1} 'BEGIN {OFS="\t"} {if ($2==RE1) print $0,1; else print $0,2}' ${name}_re_${RE1}_${RE2}_temp.txt > ${name}_re_${RE1}_${RE2}.txt
+   rm ${name}_re_${RE1}_${RE2}_temp.txt
+
+  if [ ${3} ]
+   then qsub ~/software/RESelv1.4.6/scripts/parallel_digest.sh ${1} ${name}_re_${RE1}_${RE2}.txt ${3}
+   else qsub ~/software/RESelv1.4.6/scripts/parallel_digest.sh ${1} ${name}_re_${RE1}_${RE2}.txt
+  fi
+
+  done
+ done
+
+ #deal with single digests
+ for i in "${REs[@]}"
+  do
+   grep -E "`echo ${i}`" ${2} > ${name}_re_${i}_temp.txt
+   awk -v RE1=${i} 'BEGIN {OFS="\t"} {if ($2==RE1) print $0,1; else print $0,2}' ${name}_re_${i}_temp.txt > ${name}_re_${i}.txt
+   rm ${name}_re_${i}_temp.txt
+
+   if [ ${3} ]
+    then qsub ~/software/RESelv1.4.6/scripts/parallel_digest_single.sh ${1} ${name}_re_${i}.txt ${3}
+    else qsub ~/software/RESelv1.4.6/scripts/parallel_digest_single.sh ${1} ${name}_re_${i}.txt
+   fi
+
+  done
+
+ else #account for case where only one RE is included in the master RE file
+  for i in "${REs[@]}"
+  do
+   grep -E "`echo ${i}`" ${2} > ${name}_re_${i}_temp.txt
+   awk -v RE1=${i} 'BEGIN {OFS="\t"} {if ($2==RE1) print $0,1; else print $0,2}' ${name}_re_${i}_temp.txt > ${name}_re_${i}.txt
+   rm ${name}_re_${i}_temp.txt
+
+   if [ ${3} ]
+    then qsub ~/software/RESelv1.4.6/scripts/parallel_digest_single.sh ${1} ${name}_re_${i}.txt ${3}
+    else qsub ~/software/RESelv1.4.6/scripts/parallel_digest_single.sh ${1} ${name}_re_${i}.txt
+   fi
+
+  done
+
+fi
